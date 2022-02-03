@@ -1,0 +1,479 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r}
+library(tm)
+library(stringr)
+library(dplyr)
+library(qdapTools)
+library(qdapRegex)
+library(lubridate)
+
+html.remainders = c("paddingleft","paddingtop","borderright","nonepadding","boxsizing", "borderbox", "mozboxsizing", "auto", "maxwidth", "duval", "color", "aaa", "textdecoration", "nonefontsize", "hover", "ddd", "textdecoration", "underline", "top", "display", "inlineblock", "inlineblock", "paddingtop", "paddingleft",  "height", "media", "screen", "maxwidthpx", "margin", "borderleft", "widthposition", "nonepadding", "webkitboxsizing", "moztextdecoration", "verticalalign","fontsizeremwidth", "relative border", "px", "padding", "serviceucp>ucp>cnn", "divwidth", "solid none",
+"strictcnnvidex", "cnnvidex", "cnnvidexmobile", "function", "dataobj", "strictvar", "unmute", "fave", "playerinstance", "null", "else", "containerid", "typeof", "dataobjmuted", "isplayermute", "unmutecta", "remembertime", "videndslate", "href", "falsevar", "configobj", "nonevideo", "cnnmarkupid", "trueadsection", "frameheight", "isliveplayer", "nextvideourl", "autostartvideo", "isliveplayer", "vidobj", "currentvideoid", "windowjsmd", "windowjsmdv", "nextvideoid", "locationhref", "onplayerready", "modernizr", "modernizrphone", "endslatelen", "metadata", "cvpid", "token", "blockid", "adtype", "dismissing", "pinnedplayer", "isadpause", "cnncompanion", "callbackobj", "visible", "windowssid", "boolean", "false", "true", "videourl", "storing pinned view", "new var", "videopinner", "contentid", "undefined", "instance", "playerid", "videoid") 
+```
+
+Fox case
+```{r}
+preprocess_fox <- function(fox_dataset
+                           , remove_words #  Words you want to remove from title and content
+                           , output_name #  Output location and name to save csv
+  ) {
+  #  Encoding to avoid random symbols in a text
+  for (col in colnames(fox_dataset)){
+  Encoding(fox_dataset[[col]]) <- "UTF-8"}
+  
+        
+  #  Words to avoid for a topic
+  if (!is.null(NULL)) {
+    fox_dataset = fox_dataset[!grepl(remove_words, fox_dataset$title),]
+  }
+  
+  #  Time column
+  fox_dataset[((str_sub(fox_dataset$time,-4,-3) != '20') & (str_sub(fox_dataset$time,3,6) != 'days')), "time"] <- paste0(fox_dataset[((str_sub(fox_dataset$time,-4,-3) != '20') & (str_sub(fox_dataset$time,3,6) != 'days')), "time"], ", 2021")
+  
+  fox_dataset$time = str_squish(fox_dataset$time)
+  fox_dataset$time <- as.Date(fox_dataset$time,format='%B %d, %Y')
+  fox_dataset = na.omit(fox_dataset)
+  
+  fox_dataset$byline <- sapply(fox_dataset$byline, function(x) gsub("[-|=|\\+]", "",  x))
+  fox_dataset$title <- sapply(fox_dataset$title, function(x) gsub("\\$", "dollar", x))
+  fox_dataset$content <- sapply(fox_dataset$content, function(x) gsub("\\$", "dollar", x))
+  fox_dataset$byline = trimws(fox_dataset$byline)
+  
+  #  Title column
+  documents = fox_dataset[,'title']
+  documents <- Corpus(VectorSource(documents))
+  documents = tm_map(documents, content_transformer(tolower))
+  documents = tm_map(documents, removeNumbers)
+  documents = tm_map(documents, removePunctuation, ucp = TRUE)
+  documents = tm_map(documents, removeWords, c(stopwords("english"), "close", "video"))
+  fox_dataset[,'title'] = documents
+  
+  #  Byline
+  fox_dataset[,'byline'] = sub(",.*", "", fox_dataset$byline)
+  fox_dataset[,'byline'] = sub(" and.*", "", fox_dataset$byline)
+  
+  documents = fox_dataset[,'byline']
+  documents <- Corpus(VectorSource(documents))
+  documents = tm_map(documents, removeNumbers)
+  documents = tm_map(documents, removeWords, c("rep"))
+  fox_dataset[,'byline'] = documents
+  
+  
+  #  Content column
+  documents = fox_dataset[,'content']
+  documents <- Corpus(VectorSource(documents))
+  documents = tm_map(documents, content_transformer(tolower))
+  documents = tm_map(documents, removeNumbers)
+  documents = tm_map(documents, removeWords, c(stopwords("english"), "close", "video", html.remainders[]))
+  documents = tm_map(documents, removePunctuation,ucp = TRUE)
+  documents = lapply(documents, function(x) gsub("[^\\s]*>[^\\s]*", "",x))
+  documents = lapply(documents, function(x) rm_nchar_words(x, "1,2"))
+  documents = lapply(documents, function(x) rm_nchar_words(x, "15,"))
+
+  fox_dataset$content.original = unlist(documents,use.names = FALSE)
+  
+  documents <- Corpus(VectorSource(documents))
+  documents <- tm_map(documents, stemDocument, language = "english")  
+  fox_dataset[,'content'] = documents
+  
+  fox_dataset$content.original = str_trunc(fox_dataset[,'content.original'], 32750, ellipsis = "")
+  
+  #  Output
+  colnames(fox_dataset) = c("title", "author", "time","content_stem", "content_original")
+  #  Output
+  write.csv(fox_dataset, paste0(output_name,"_fox_cleaned.csv"), row.names=FALSE, quote=FALSE) 
+}
+```
+
+CNN case
+```{r}
+preprocess_cnn <- function(cnn_dataset
+                           #, remove_words #  Words you want to remove from title and content
+                           , output_name #  Output location and name to save csv
+  ) {
+  #  Change encoding to avoid random symbols
+  for (col in colnames(cnn_dataset)){
+    Encoding(cnn_dataset[[col]]) <- "UTF-8"}
+  
+  #  Remove every row that has at least two blank values
+  cnn_dataset = cnn_dataset[rowSums(cnn_dataset=="") < 2 , ]
+  
+  #  Time remove the beginning and format
+  cnn_dataset$time = str_sub(cnn_dataset$time,29,-2)
+  cnn_dataset$time <- as.Date(cnn_dataset$time,format='%B %d, %Y')
+  cnn_dataset = na.omit(cnn_dataset)
+  
+  #  ads, intros
+  cnn_dataset$content = gsub("\\'use.*?WATCH", "", cnn_dataset$content)
+  cnn_dataset$content = sub(".*Story highlights", "", cnn_dataset$content)
+  cnn_dataset$content = sub(".*(CNN business)", "", cnn_dataset$content)
+  cnn_dataset$content = gsub( " *\\{.*?\\} *", "", cnn_dataset$content)
+  cnn_dataset$content = gsub( " *\\(.*?\\) *", "", cnn_dataset$content)
+
+  cnn_dataset$title <- sapply(cnn_dataset$title, function(x) gsub("\\$", "dollar", x))
+  cnn_dataset$content <- sapply(cnn_dataset$content, function(x) gsub("\\$", "dollar", x))
+  
+  #  Standard cleanse
+  documents = cnn_dataset[,'title']
+  documents <- Corpus(VectorSource(documents))
+  documents = tm_map(documents, content_transformer(tolower))
+  documents = tm_map(documents, removeNumbers)
+  documents = tm_map(documents, removePunctuation,ucp = TRUE)
+  documents = tm_map(documents, removeWords, c(stopwords("english")))
+  cnn_dataset[,'title'] = documents
+  
+  #  Byline remove prefix...
+  cnn_dataset[,'byline'] = sub(",.*", "", cnn_dataset$byline)
+  cnn_dataset[,'byline'] = sub(" and.*", "", cnn_dataset$byline)
+  cnn_dataset[,'byline'] = sub(" for.*", "", cnn_dataset$byline)
+  str_sub(cnn_dataset$byline, 1, 1) = str_sub(cnn_dataset$byline, 1, 1) %>% str_to_lower()
+  cnn_dataset[,'byline'] = sub(".*by ", "", cnn_dataset$byline)
+  
+  #  Byline
+  documents = cnn_dataset[,'byline']
+  documents <- Corpus(VectorSource(documents))
+  documents = tm_map(documents, removeNumbers)
+  documents = tm_map(documents, removePunctuation, ucp = TRUE)
+  cnn_dataset[,'byline'] = documents
+  
+  #  Content
+
+  documents = cnn_dataset[,'content']
+  documents <- Corpus(VectorSource(documents))
+  documents = tm_map(documents, content_transformer(tolower))
+  documents = tm_map(documents, removeNumbers)
+  documents = tm_map(documents, removeWords, c(stopwords("english"), "will", html.remainders[]))
+  documents = tm_map(documents, removePunctuation,ucp = TRUE)
+  documents = lapply(documents, function(x) gsub("[^\\s]*>[^\\s]*", "",x))
+  documents = lapply(documents, function(x) rm_nchar_words(x, "1,2"))
+  documents = lapply(documents, function(x) rm_nchar_words(x, "15,"))
+
+  cnn_dataset$content.original = unlist(documents,use.names = FALSE)
+  
+  documents <- Corpus(VectorSource(documents))
+  documents <- tm_map(documents, stemDocument, language = "english")  
+  cnn_dataset[,'content'] = documents
+  dim(cnn_dataset)
+  
+  cnn_dataset$content.original = str_trunc(cnn_dataset[,'content.original'], 32766, ellipsis = "")
+
+  cnn_dataset$byline = trimws(cnn_dataset$byline)
+  
+  #  Filter old data
+  #cnn_dataset = cnn_dataset %>% filter(str_length(cnn_dataset$content) > 10)
+  subset <- cnn_dataset %>% filter(cnn_dataset$time >= '2016-01-01' & cnn_dataset$time < '2021-11-01')
+
+  #  Output
+  colnames(subset) = c("title", "author", "time","content_stem", "content_original")
+  write.csv(subset, paste0(output_name, "_cnn_cleaned.csv"), row.names=FALSE, quote=FALSE) 
+  
+} 
+```
+
+
+Separate sheets
+```{r setup, include=FALSE}
+setwd("C:/Users/sauli/Desktop/Topic Articles/")
+
+df = NULL
+for (topic in topics) {
+  
+  #  Apply function to separate topics and later join
+  cnn = read.csv(paste0(topic, "_cnn.csv"), header = TRUE)
+  preprocess_cnn(cnn, topic)
+  
+  fox = read.csv(paste0(topic, "_fox.csv"), header = TRUE)
+  preprocess_fox(fox, NULL, topic)
+  
+  #  Read initial dfs
+  cnn = read.csv(paste0(topic, "_cnn_cleaned.csv"), header = TRUE)
+  fox = read.csv(paste0(topic, "_fox_cleaned.csv"), header = TRUE)
+  
+  #  Add seperator* and for topic too
+  cnn$side = 'CNN'
+  fox$side = 'Fox News'
+  
+  cnn$topic = topic
+  fox$topic = topic
+  
+  df = rbind(df, cnn, fox)
+}
+
+df = na.omit(df)
+df = df %>% filter(nchar(content_stem) > 50)
+
+df$content_stem = str_trunc(df[,'content_stem'], 32750, ellipsis = "")
+df$content_original = str_trunc(df[,'content_original'], 32750, ellipsis = "")
+
+write.csv(df, "all_articles.csv", row.names=FALSE, quote=FALSE) 
+```
+
+## Archives
+    Both sides have a same procedure, only one column differs
+```{r}
+preprocess_archives <- function(anchor) {
+  df = read.csv( paste0("archives_",anchor,".csv"), header = TRUE)
+  
+  #  Align formatting
+  for (col in colnames(df)){
+      Encoding(df[[col]]) <- "UTF-8"}
+  
+  #  Remove additional timestamps
+  df$time = str_sub(df$time,1,-19)
+  
+  if (anchor %in% c("cooper","cuomo","lemon")){
+    df$time = str_sub(df$time,5,-1)
+  }
+  
+  df[((str_sub(df$time,-3,-1) == '7 1') |  (str_sub(df$time,-3,-1) == '8 1') | (str_sub(df$time,-3,-1) == '9 1') | (str_sub(df$time,-3,-1) == '0 1') | (str_sub(df$time,-3,-1) == '1 1')), "time"] = str_sub(df[((str_sub(df$time,-3,-1) == '7 1') |  (str_sub(df$time,-3,-1) == '8 1') | (str_sub(df$time,-3,-1) == '9 1') | (str_sub(df$time,-3,-1) == '0 1') | (str_sub(df$time,-3,-1) == '1 1')), "time"], 1,-2)
+  
+  #  Change timestap and remove random inputs
+  df$time <- as.Date(df$time,format='%B %d, %Y')
+  df = na.omit(df)
+  
+  df$year  = as.yearqtr(as.Date(df$time, format = "%Y-%m-%d"), format = "%Y-%m-%d")
+  
+  if (anchor %in% c("cooper","cuomo","lemon")) {
+    df$side = "CNN"
+  } else{
+    df$side = "FOX"
+  }
+  
+  
+  df$title = anchor
+  
+  # Create two datasets: with stemmed content and not amended
+  documents = df[,c("content", "content2")]
+  documents <- sapply(documents, function(x) gsub("\\$", "dollar", x))
+  documents <- sapply(documents, function(x) gsub("\\%", "precent", x))
+  documents = gsub( " *\\[.*?\\] *", "", documents)
+  documents = gsub( " *\\(.*?\\) *", "", documents)
+  documents = gsub( " *\\{.*?\\} *", "", documents)
+  
+  df[,c("content", "content2")] = documents
+  
+  documents = df[,'content']
+  documents <- Corpus(VectorSource(documents))
+  documents = tm_map(documents, content_transformer(tolower))
+  documents = tm_map(documents, removeNumbers)
+  documents = tm_map(documents, removeWords, c(stopwords("english")))
+  documents = tm_map(documents, removePunctuation,ucp = TRUE)
+  documents = lapply(documents, function(x) gsub("[^\\s]*>[^\\s]*", "",x))
+  documents = lapply(documents, function(x) rm_nchar_words(x, "1,2"))
+  documents = lapply(documents, function(x) rm_nchar_words(x, "15,"))
+
+  df$content = unlist(documents,use.names = FALSE)
+
+  documents <- Corpus(VectorSource(documents))
+  documents <- tm_map(documents, stemDocument, language = "english")  
+  df[,'content_stem'] = documents
+  
+  documents = df[,'content2']
+  documents <- Corpus(VectorSource(documents))
+  documents = tm_map(documents, content_transformer(tolower))
+  documents = tm_map(documents, removeNumbers)
+  documents = tm_map(documents, removeWords, c(stopwords("english")))
+  documents = tm_map(documents, removePunctuation,ucp = TRUE)
+  documents = lapply(documents, function(x) gsub("[^\\s]*>[^\\s]*", "",x))
+  documents = lapply(documents, function(x) rm_nchar_words(x, "1,2"))
+  documents = lapply(documents, function(x) rm_nchar_words(x, "15,"))
+
+  df$content2 = unlist(documents,use.names = FALSE)
+
+  documents <- Corpus(VectorSource(documents))
+  documents <- tm_map(documents, stemDocument, language = "english")  
+  df[,'content2_stem'] = documents
+  
+  colnames(df) = c("time","anchor","content_original","content2_original","year","side", "content_stem", "content2_stem")
+  
+  write.csv(df, paste0("archives_",anchor,"_cleaned.csv"), row.names=FALSE, quote=FALSE) 
+}
+
+df = df %>% filter(nchar(content_original) > 50)
+```
+
+
+Common words
+```{r}
+setwd("C:/Users/sauli/Desktop/")
+df_common = read.table("google-10000-english-usa-no-swears.txt")
+
+df_common = df_common %>% 
+  filter(nchar(V1)>3 & nchar(V1) <15)
+
+df_common = df_common %>%
+  group_by() %>%
+  summarise(content = paste(V1, collapse = " "))
+
+documents <- Corpus(VectorSource(df_common[,"content"]))
+documents = tm_map(documents, removeWords, c(stopwords("english")))
+documents = tm_map(documents, PlainTextDocument)
+documents <- tm_map(documents, stemDocument, language = "english")  
+tdm = TermDocumentMatrix(documents, control = list(wordLengths = c(3, 15)))
+df_common = data.frame(dimnames(tdm)$Terms)
+colnames(df_common) = "basic_words"
+df_common$basic_words = trimws(df_common$basic_words)
+df_common = df_common %>%
+  unique()
+
+write.csv(df_common,"common-usa.csv", row.names=FALSE, quote=FALSE) 
+```
+
+```{r}
+setwd("C:/Users/sauli/Desktop/")
+
+df_articles = read.csv("all_articles.csv", header = TRUE, encoding = "ISO-8859-13")
+
+df_archives = read.csv("all_archives.csv", header = TRUE, encoding = "ISO-8859-13")
+df_archives$content = paste0(df_archives$content_stem, df_archives$content2_stem)
+
+
+df_articles$year[substr(df_articles$year,6,7) == "Q1"] <- paste0(substr(df_articles$year,1,4), "-01-01")
+df_articles$year[substr(df_articles$year,6,7) == "Q2"] <- paste0(substr(df_articles$year,1,4), "-04-01")
+df_articles$year[substr(df_articles$year,6,7) == "Q3"] <- paste0(substr(df_articles$year,1,4), "-07-01")
+df_articles$year[substr(df_articles$year,6,7) == "Q4"] <- paste0(substr(df_articles$year,1,4), "-10-01")
+
+df_archives$year[substr(df_archives$year,6,7) == "Q1"] <- paste0(substr(df_archives$year,1,4), "-01-01")
+df_archives$year[substr(df_archives$year,6,7) == "Q2"] <- paste0(substr(df_archives$year,1,4), "-04-01")
+df_archives$year[substr(df_archives$year,6,7) == "Q3"] <- paste0(substr(df_archives$year,1,4), "-07-01")
+df_archives$year[substr(df_archives$year,6,7) == "Q4"] <- paste0(substr(df_archives$year,1,4), "-10-01")
+
+df_archives$anchor = str_to_title(df_archives$anchor)
+df_articles$topic = str_to_title(df_articles$topic)
+
+df_articles$topic[df_articles$topic == "National_security"] <- "National Security"
+df_articles$topic[df_articles$topic == "Borderwall"] <- "Border Wall"
+df_articles$side[df_articles$side == "Fox News"] <- "FOX"
+
+df_articles = df_articles[,c(7,8,9,5,10)]
+colnames(df_articles) = c("Year", "Media", "Topic", "content", "title_sentiment" )
+
+df_archives = df_archives[,c(2,5,6,9)]
+colnames(df_archives) = c("Anchor", "Year", "Media", "content")
+```
+
+
+Add TTR for lexicon complexity measures
+```{r}
+df_archives$content = stri_enc_toutf8(df_archives$content)
+dft = transpose(df_archives)
+dft_corp = Corpus(VectorSource(dft[4,]))
+mydtm = DocumentTermMatrix(dft_corp)
+  
+mydfm = as.dfm(mydtm)
+
+df = mydfm%>%
+      textstat_lexdiv(measure = c("TTR"))
+
+df_archives$ttr = df$TTR
+
+
+#  The same with articles
+df_articles$content = stri_enc_toutf8(df_articles$content)
+dft = transpose(df_articles)
+dft_corp = Corpus(VectorSource(dft[4,]))
+mydtm = DocumentTermMatrix(dft_corp)
+  
+mydfm = as.dfm(mydtm)
+
+df = mydfm%>%
+      textstat_lexdiv(measure = c("TTR"))
+
+df_articles$ttr = df$TTR
+```
+
+Basic words measure
+```{r}
+#  First count all words
+df_articles$all_words = str_count(df_articles[,"content"], '\\w+')
+df_archives$all_words = str_count(df_archives[,"content"], '\\w+')
+
+#  Add count of basic words in percentage
+getCount <- function(data,keyword)
+{
+  return(data.frame(data,wcount))
+}
+
+df = df_articles
+
+wcount = 0
+t = 1
+
+for (i in df_common$basic_words)
+{
+  wcount <- wcount + str_count(df$content, paste0("\\b", i,"\\b"))
+  print(t)
+  t = t + 1
+}
+
+df = data.frame(df,wcount)
+df$prop = df$wcount / df$all_words
+
+df_articles$basic_words = df$wcount
+df_articles$prop = df$prop
+
+
+#  For shows
+df = df_archives
+
+wcount = 0
+t = 1
+
+for (i in df_common$basic_words)
+{
+  wcount <- wcount + str_count(df$content, paste0("\\b", i,"\\b"))
+  print(t)
+  t = t + 1
+}
+
+df = data.frame(df,wcount)
+df$prop = df$wcount / df$all_words
+
+df_archives$basic_words = df$wcount
+df_archives$prop = df$prop
+
+```
+
+
+How to clean television shows data
+```{r}
+for (col in colnames(df)){
+    Encoding(df[[col]]) <- "UTF-8"}
+
+#  Remove additional timestamps
+df$time = str_sub(df$time,1,-19)
+df[((str_sub(df$time,-3,-1) == '7 1') |  (str_sub(df$time,-3,-1) == '8 1') | (str_sub(df$time,-3,-1) == '9 1') | (str_sub(df$time,-3,-1) == '0 1') | (str_sub(df$time,-3,-1) == '1 1')), "time"] = ''
+
+#  Change timestap and remove random inputs
+df$time <- as.Date(df$time,format='%B %d, %Y')
+df = na.omit(df)
+
+#  Align title, join contents and remove content2 column
+df$title = 'Tucker Carlson'
+df$content = paste0(df$content, df$content2)
+df <- subset(df, select = c(1,2,3))
+
+# Create two datasets: with stemmed content and not amended
+df$content <- sapply(df$content, function(x) gsub("\\$", "dollar", x))
+df$content <- sapply(df$content, function(x) gsub("\\%", "precent", x))
+df$content = gsub( " *\\[.*?\\] *", "", df$content)
+df$content = gsub( " *\\(.*?\\) *", "", df$content)
+df$content = gsub( " *\\{.*?\\} *", "", df$content)
+
+documents = df[,'content']
+documents <- Corpus(VectorSource(documents))
+documents = tm_map(documents, content_transformer(tolower))
+documents = tm_map(documents, removeNumbers)
+documents = tm_map(documents, removeWords, c(stopwords("english"),"martha"))
+documents = tm_map(documents, removePunctuation,ucp = TRUE)
+df[,'content'] = documents
+documents <- tm_map(documents, stemDocument, language = "english")  
+df[,'content_stem'] = documents
+
+write.csv(df, "archives_tucker_cleaned.csv", row.names=FALSE, quote=FALSE) 
+```
+
